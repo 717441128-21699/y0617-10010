@@ -376,15 +376,18 @@ export const useAnimationStore = create<AnimationState & AnimationActions>((set,
   },
 
   importFromCss: (result) => {
+    const sorted = [...result.keyframes].sort((a, b) => a.percent - b.percent);
+    const firstKfId = sorted[0]?.id ?? null;
+    const firstEasingPair = sorted.length >= 2 ? `${sorted[0].id}-${sorted[1].id}` : null;
     set(
       produce((s: AnimationState) => {
         pushHistory(s);
         s.name = result.name;
-        s.keyframes = result.keyframes;
+        s.keyframes = sorted;
         s.easingCurves = result.easingCurves;
         if (result.duration) s.duration = result.duration;
-        s.selectedKeyframeId = null;
-        s.selectedEasingPair = null;
+        s.selectedKeyframeId = firstKfId;
+        s.selectedEasingPair = firstEasingPair;
         s.playback.currentTime = 0;
         s.playback.isPlaying = false;
       })

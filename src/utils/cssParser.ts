@@ -21,29 +21,30 @@ const defaultProps: KeyframeProperties = {
 
 function parseTransform(transformStr: string): Partial<KeyframeProperties> {
   const props: Partial<KeyframeProperties> = {};
+  const cleaned = transformStr.replace(/-webkit-|-moz-|-ms-|-o-/g, '');
 
-  const translateMatch = transformStr.match(/translate\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)/);
-  if (translateMatch) {
-    props.translateX = parseCssValue(translateMatch[1]);
-    props.translateY = parseCssValue(translateMatch[2]);
+  const translate2Match = cleaned.match(/(?:^|[\s])translate\(\s*([^,)]+?)\s*(?:,\s*([^)]+?))?\s*\)/);
+  if (translate2Match) {
+    props.translateX = parseCssValue(translate2Match[1]);
+    props.translateY = translate2Match[2] ? parseCssValue(translate2Match[2]) : 0;
   }
 
-  const translateXMatch = transformStr.match(/translateX\(\s*([^)]+?)\s*\)/);
+  const translateXMatch = cleaned.match(/translateX\(\s*([^)]+?)\s*\)/);
   if (translateXMatch) {
     props.translateX = parseCssValue(translateXMatch[1]);
   }
 
-  const translateYMatch = transformStr.match(/translateY\(\s*([^)]+?)\s*\)/);
+  const translateYMatch = cleaned.match(/translateY\(\s*([^)]+?)\s*\)/);
   if (translateYMatch) {
     props.translateY = parseCssValue(translateYMatch[1]);
   }
 
-  const rotateMatch = transformStr.match(/rotate\(\s*([^)]+?)\s*\)/);
+  const rotateMatch = cleaned.match(/rotate\(\s*([^)]+?)\s*\)/);
   if (rotateMatch) {
     props.rotate = parseCssValue(rotateMatch[1]);
   }
 
-  const scaleMatch = transformStr.match(/scale\(\s*([^,]+?)\s*(?:,\s*([^)]+?)\s*)?\)/);
+  const scaleMatch = cleaned.match(/scale\(\s*([^,)]+?)\s*(?:,\s*([^)]+?)\s*)?\)/);
   if (scaleMatch) {
     const sx = parseFloat(scaleMatch[1]);
     const sy = scaleMatch[2] ? parseFloat(scaleMatch[2]) : sx;
@@ -51,14 +52,16 @@ function parseTransform(transformStr: string): Partial<KeyframeProperties> {
     props.scaleY = isNaN(sy) ? 1 : sy;
   }
 
-  const scaleXMatch = transformStr.match(/scaleX\(\s*([^)]+?)\s*\)/);
+  const scaleXMatch = cleaned.match(/scaleX\(\s*([^)]+?)\s*\)/);
   if (scaleXMatch) {
-    props.scaleX = parseFloat(scaleXMatch[1]);
+    const v = parseFloat(scaleXMatch[1]);
+    if (!isNaN(v)) props.scaleX = v;
   }
 
-  const scaleYMatch = transformStr.match(/scaleY\(\s*([^)]+?)\s*\)/);
+  const scaleYMatch = cleaned.match(/scaleY\(\s*([^)]+?)\s*\)/);
   if (scaleYMatch) {
-    props.scaleY = parseFloat(scaleYMatch[1]);
+    const v = parseFloat(scaleYMatch[1]);
+    if (!isNaN(v)) props.scaleY = v;
   }
 
   return props;
@@ -135,16 +138,38 @@ function parseDurationValue(raw: string): number | undefined {
   return undefined;
 }
 
+function normalizePropName(pn: string): string {
+  return pn.replace(/^-(?:webkit|moz|o|ms)-/, '').toLowerCase();
+}
+
+function findKeyframesBlock(css: string): { name: string; fullBlock: string } | null {
+  const patterns = [
+    /@keyframes\s+([^{]+?)\s*\{/i,
+    /@-webkit-keyframes\s+([^{]+?)\s*\{/i,
+    /@-moz-keyframes\s+([^{]+?)\s*\{/i,
+    /@-ms-keyframes\s+([^{]+?)\s*\{/i,
+    /@-o-keyframes\s+([^{]+?)\s*\{/i,
+  ];
+  for (const pat of patterns) {
+    const m = css.match(pat);
+    if (m) {
+      const name = m[1].trim();
+      const blockStart = m.index! + m[0].length - 1;
+      const fullBlock = findMatchingBlock(css, blockStart);
+      if (fullBlock) return { name, fullBlock };
+    }
+  }
+  return null;
+}
+
 export function parseCssKeyframes(cssText: string): ParseResult | null {
   try {
     let css = cssText.replace(/\/\*[\s\S]*?\*\//g, '').trim();
 
-    const keyframesMatch = css.match(/@-?webkit-?keyframes\s+([^{]+?)\s*\{/i);
-    if (!keyframesMatch) return null;
+    const found = findKeyframesBlock(css);
+    if (!found) return null;
+    const { name, fullBlock } = found;
 
-    const name = keyframesMatch[1].trim();
-    const blockStart = keyframesMatch.index! + keyframesMatch[0].length - 1;
-    const fullBlock = findMatchingBlock(css, blockStart);
     const innerContent = fullBlock.substring(fullBlock.indexOf('{') + 1, fullBlock.lastIndexOf('}'));
 
     const rawKeyframes: Array<{ percent: number; properties: Record<string, string> }> = [];
@@ -189,7 +214,7 @@ export function parseCssKeyframes(cssText: string): ParseResult | null {
       for (const pp of propParts) {
         const colon = pp.indexOf(':');
         if (colon < 0) continue;
-        const pn = pp.substring(0, colon).trim().toLowerCase();
+        const pn = normalizePropName(pp.substring(0, colon).trim());
         const pv = pp.substring(colon + 1).trim();
         if (pn && pv) properties[pn] = pv;
       }
@@ -272,20 +297,16 @@ export function parseCssKeyframes(cssText: string): ParseResult | null {
     }
 
     let duration: number | undefined;
-    const durPropMatch = css.match(/animation-duration\s*:\s*([^;]+)/i);
+    const durPropMatch = css.match(/animation-duration\s*:\s*([^;}]+)/i);
     if (durPropMatch) duration = parseDurationValue(durPropMatch[1]);
     if (!duration) {
-      const shorthandMatch = css.match(/(?:^|[{;])\s*animation\s*:\s*([^;]+)/im);
-      if (shorthandMatch) duration = parseDurationValue(shorthandMatch[1]);
-    }
-    if (!duration) {
-      const animShorthandAll = css.match(/animation\s*:\s*([^;{]+)/gi);
-      if (animShorthandAll) {
-        for (const m of animShorthandAll) {
-          const parts = m.split(':');
-          if (parts.length >= 2) {
-            const d = parseDurationValue(parts[1]);
-            if (d) {
+      const shorthandMatch = css.match(/animation\s*:\s*([^;}]+)/gi);
+      if (shorthandMatch) {
+        for (const m of shorthandMatch) {
+          const colon = m.indexOf(':');
+          if (colon >= 0) {
+            const d = parseDurationValue(m.substring(colon + 1));
+            if (d !== undefined) {
               duration = d;
               break;
             }
