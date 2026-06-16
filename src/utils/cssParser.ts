@@ -116,61 +116,95 @@ function findMatchingBlock(text: string, startIndex: number): string {
   return text.substring(startIndex);
 }
 
+function parseDurationValue(raw: string): number | undefined {
+  const parts = raw.split(/[,\s]+/);
+  for (const part of parts) {
+    const val = part.trim().toLowerCase();
+    if (!val) continue;
+    if (val.endsWith('ms')) {
+      const n = parseFloat(val);
+      if (!isNaN(n)) return n / 1000;
+    } else if (val.endsWith('s')) {
+      const n = parseFloat(val);
+      if (!isNaN(n)) return n;
+    } else {
+      const n = parseFloat(val);
+      if (!isNaN(n)) return n >= 10 ? n / 1000 : n;
+    }
+  }
+  return undefined;
+}
+
 export function parseCssKeyframes(cssText: string): ParseResult | null {
   try {
     let css = cssText.replace(/\/\*[\s\S]*?\*\//g, '').trim();
 
-    const keyframesMatch = css.match(/@keyframes\s+([^{]+?)\s*\{/i);
-    if (!keyframesMatch) {
-      const kfMatch = css.match(/@-webkit-keyframes\s+([^{]+?)\s*\{/i);
-      if (!kfMatch) return null;
-      return parseCssKeyframes(css.replace(/@-webkit-keyframes/i, '@keyframes'));
-    }
+    const keyframesMatch = css.match(/@-?webkit-?keyframes\s+([^{]+?)\s*\{/i);
+    if (!keyframesMatch) return null;
 
     const name = keyframesMatch[1].trim();
     const blockStart = keyframesMatch.index! + keyframesMatch[0].length - 1;
     const fullBlock = findMatchingBlock(css, blockStart);
     const innerContent = fullBlock.substring(fullBlock.indexOf('{') + 1, fullBlock.lastIndexOf('}'));
 
-    const kfRegex = /(?:^|\})\s*([^{]+?)\s*\{/g;
     const rawKeyframes: Array<{ percent: number; properties: Record<string, string> }> = [];
-    let match;
-    let lastIndex = 0;
+    const tokens: Array<{ type: 'sel' | 'prop'; value: string; block?: string }> = [];
+    {
+      let depth = 0;
+      let i = 0;
+      let buf = '';
+      while (i < innerContent.length) {
+        const c = innerContent[i];
+        if (c === '{') {
+          if (depth === 0 && buf.trim()) {
+            tokens.push({ type: 'sel', value: buf.trim() });
+            buf = '';
+          } else {
+            buf += c;
+          }
+          depth++;
+        } else if (c === '}') {
+          depth--;
+          if (depth === 0) {
+            const last = tokens[tokens.length - 1];
+            if (last && last.type === 'sel') last.block = buf;
+            buf = '';
+          } else {
+            buf += c;
+          }
+        } else {
+          buf += c;
+        }
+        i++;
+      }
+    }
 
-    while ((match = kfRegex.exec(innerContent)) !== null) {
-      if (match.index < lastIndex) continue;
-      const selector = match[1].trim();
-      const blockStartIdx = match.index + match[0].length - 1;
-      const block = findMatchingBlock(innerContent, blockStartIdx);
-      const blockContent = block.substring(block.indexOf('{') + 1, block.lastIndexOf('}'));
-      lastIndex = match.index + block.length;
-
+    for (const tok of tokens) {
+      if (tok.type !== 'sel' || !tok.block) continue;
+      const selector = tok.value;
+      const blockContent = tok.block;
       const percents = selector.split(',').map(s => s.trim());
+      const properties: Record<string, string> = {};
+      const propParts = blockContent.split(';');
+      for (const pp of propParts) {
+        const colon = pp.indexOf(':');
+        if (colon < 0) continue;
+        const pn = pp.substring(0, colon).trim().toLowerCase();
+        const pv = pp.substring(colon + 1).trim();
+        if (pn && pv) properties[pn] = pv;
+      }
       for (const p of percents) {
         let percent: number;
         if (p.toLowerCase() === 'from') percent = 0;
         else if (p.toLowerCase() === 'to') percent = 100;
         else if (p.endsWith('%')) percent = parseFloat(p);
         else continue;
-
         if (isNaN(percent) || percent < 0 || percent > 100) continue;
-
-        const properties: Record<string, string> = {};
-        const propRegex = /([a-zA-Z-]+)\s*:\s*([^;]+?)(?=;|$)/g;
-        let propMatch;
-        while ((propMatch = blockContent.matchAll(propRegex)) !== null) {
-          const m = propMatch.next();
-          if (m.done) break;
-          const [_, propName, propValue] = m.value;
-          properties[propName.trim().toLowerCase()] = propValue.trim();
-        }
-        rawKeyframes.push({ percent, properties });
+        rawKeyframes.push({ percent, properties: { ...properties } });
       }
     }
 
-    if (rawKeyframes.length < 2) {
-      return null;
-    }
+    if (rawKeyframes.length === 0) return null;
 
     rawKeyframes.sort((a, b) => a.percent - b.percent);
 
@@ -181,7 +215,17 @@ export function parseCssKeyframes(cssText: string): ParseResult | null {
       rawKeyframes.push({ percent: 100, properties: {} });
     }
 
-    const keyframes: Keyframe[] = rawKeyframes.map((rk, idx) => {
+    const merged: Array<{ percent: number; properties: Record<string, string> }> = [];
+    for (const rk of rawKeyframes) {
+      const last = merged[merged.length - 1];
+      if (last && Math.abs(last.percent - rk.percent) < 0.01) {
+        last.properties = { ...last.properties, ...rk.properties };
+      } else {
+        merged.push({ percent: rk.percent, properties: { ...rk.properties } });
+      }
+    }
+
+    const keyframes: Keyframe[] = merged.map((rk) => {
       const props = { ...defaultProps };
       if (rk.properties['transform']) {
         const parsed = parseTransform(rk.properties['transform']);
@@ -192,8 +236,8 @@ export function parseCssKeyframes(cssText: string): ParseResult | null {
         if (parsed.scaleY !== undefined) props.scaleY = parsed.scaleY;
       }
       if (rk.properties['opacity']) {
-        props.opacity = parseFloat(rk.properties['opacity']);
-        if (isNaN(props.opacity)) props.opacity = 1;
+        const op = parseFloat(rk.properties['opacity']);
+        props.opacity = isNaN(op) ? 1 : op;
       }
       return {
         id: genId(),
@@ -205,25 +249,21 @@ export function parseCssKeyframes(cssText: string): ParseResult | null {
 
     for (let i = 0; i < keyframes.length; i++) {
       const kf = keyframes[i];
-      if (kf.properties.opacity === undefined || isNaN(kf.properties.opacity)) {
+      if (isNaN(kf.properties.opacity)) {
         if (i === 0) {
-          const nextNonZero = keyframes.find((k, j) => j > i && !isNaN(k.properties.opacity) && k.properties.opacity !== undefined);
-          kf.properties.opacity = nextNonZero ? nextNonZero.properties.opacity : 1;
-        } else if (i === keyframes.length - 1) {
-          kf.properties.opacity = keyframes[i - 1].properties.opacity;
+          const next = keyframes.find((k, j) => j > i && !isNaN(k.properties.opacity));
+          kf.properties.opacity = next ? next.properties.opacity : 1;
         } else {
-          const prev = keyframes[i - 1];
-          const next = keyframes[i + 1];
-          const t = (kf.percent - prev.percent) / (next.percent - prev.percent);
-          kf.properties.opacity = prev.properties.opacity + (next.properties.opacity - prev.properties.opacity) * t;
+          kf.properties.opacity = keyframes[i - 1].properties.opacity;
         }
       }
     }
 
     const easingCurves: Record<string, EasingCurve> = {};
+    const defEase: EasingCurve = { name: 'ease', p1x: 0.25, p1y: 0.1, p2x: 0.25, p2y: 1 };
     for (let i = 0; i < keyframes.length - 1; i++) {
       const pairKey = `${keyframes[i].id}-${keyframes[i + 1].id}`;
-      let easing: EasingCurve = { name: 'ease', p1x: 0.25, p1y: 0.1, p2x: 0.25, p2y: 1 };
+      let easing = defEase;
       if (keyframes[i].easing) {
         const parsed = parseEasing(keyframes[i].easing as string);
         if (parsed) easing = parsed;
@@ -232,15 +272,8 @@ export function parseCssKeyframes(cssText: string): ParseResult | null {
     }
 
     let duration: number | undefined;
-    const durationMatch = css.match(/animation-duration\s*:\s*([^;]+)/i);
-    if (durationMatch) {
-      const val = durationMatch[1].trim();
-      if (val.endsWith('s')) {
-        duration = parseFloat(val);
-      } else if (val.endsWith('ms')) {
-        duration = parseFloat(val) / 1000;
-      }
-    }
+    const fullDurMatch = css.match(/animation-duration\s*:\s*([^;]+)/i);
+    if (fullDurMatch) duration = parseDurationValue(fullDurMatch[1]);
 
     return { name, keyframes, easingCurves, duration };
   } catch (e) {

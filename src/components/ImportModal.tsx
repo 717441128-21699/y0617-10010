@@ -1,13 +1,20 @@
 import { useState } from 'react';
-import { X, Upload, AlertCircle, CheckCircle } from 'lucide-react';
+import { X, Upload, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
 import { useAnimationStore } from '../store/animationStore';
-import { parseCssKeyframes, isValidKeyframesCss } from '../utils/cssParser';
+import { parseCssKeyframes, isValidKeyframesCss, type ParseResult } from '../utils/cssParser';
+
+function formatNum(n: number, digits = 2): string {
+  return Number(n.toFixed(digits)).toString();
+}
 
 export default function ImportModal() {
   const { importModalOpen, setImportModalOpen, importFromCss } = useAnimationStore();
   const [cssText, setCssText] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [parsedCount, setParsedCount] = useState(0);
+  const [parsing, setParsing] = useState(false);
+  const [parsedDuration, setParsedDuration] = useState<number | undefined>(undefined);
 
   if (!importModalOpen) return null;
 
@@ -16,11 +23,15 @@ export default function ImportModal() {
     setCssText('');
     setError(null);
     setSuccess(false);
+    setParsedCount(0);
+    setParsing(false);
+    setParsedDuration(undefined);
   };
 
   const handleParse = () => {
     setError(null);
     setSuccess(false);
+    setParsedCount(0);
 
     if (!cssText.trim()) {
       setError('请粘贴 CSS 代码');
@@ -32,22 +43,32 @@ export default function ImportModal() {
       return;
     }
 
-    const result = parseCssKeyframes(cssText);
-    if (!result) {
-      setError('CSS 解析失败。请检查代码格式是否正确。');
-      return;
-    }
-
-    if (result.keyframes.length < 2) {
-      setError('@keyframes 至少需要两个关键帧（0% 和 100%）。');
-      return;
-    }
-
-    importFromCss(result);
-    setSuccess(true);
+    setParsing(true);
+    const textSnapshot = cssText;
     setTimeout(() => {
-      handleClose();
-    }, 800);
+      let result: ParseResult | null = null;
+      try {
+        result = parseCssKeyframes(textSnapshot);
+      } catch (e) {
+        console.error('解析异常:', e);
+      }
+      setParsing(false);
+      if (!result) {
+        setError('CSS 解析失败。请检查代码格式是否正确。');
+        return;
+      }
+      if (result.keyframes.length < 2) {
+        setError('@keyframes 至少需要两个关键帧（0% 和 100%）。');
+        return;
+      }
+      importFromCss(result);
+      setParsedCount(result.keyframes.length);
+      setParsedDuration(result.duration);
+      setSuccess(true);
+      setTimeout(() => {
+        handleClose();
+      }, 1000);
+    }, 10);
   };
 
   const handlePaste = async () => {
@@ -123,10 +144,19 @@ export default function ImportModal() {
             </div>
           )}
 
+          {parsing && (
+            <div className="flex items-start gap-2 p-3 rounded-lg bg-editor-accent/10 border border-editor-accent/30">
+              <Loader2 size={16} className="text-editor-accent flex-shrink-0 mt-0.5 animate-spin" />
+              <p className="text-[12px] text-editor-accent">正在解析...</p>
+            </div>
+          )}
+
           {success && (
             <div className="flex items-start gap-2 p-3 rounded-lg bg-editor-success/10 border border-editor-success/30">
               <CheckCircle size={16} className="text-editor-success flex-shrink-0 mt-0.5" />
-              <p className="text-[12px] text-editor-success">解析成功！已导入 {success ? parseCssKeyframes(cssText)?.keyframes.length : 0} 个关键帧。</p>
+              <p className="text-[12px] text-editor-success">
+                解析成功！已导入 {parsedCount} 个关键帧{parsedDuration != null ? `，时长 ${formatNum(parsedDuration)}s` : ''}。
+              </p>
             </div>
           )}
 
@@ -154,15 +184,18 @@ export default function ImportModal() {
         <div className="flex items-center justify-end gap-2 px-5 py-3.5 border-t border-editor-border/50">
           <button
             onClick={handleClose}
-            className="px-4 py-2 text-[12px] rounded-lg bg-editor-border hover:bg-slate-600 text-slate-300 transition-colors"
+            disabled={parsing}
+            className="px-4 py-2 text-[12px] rounded-lg bg-editor-border hover:bg-slate-600 text-slate-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             取消
           </button>
           <button
             onClick={handleParse}
-            className="px-4 py-2 text-[12px] rounded-lg bg-gradient-to-r from-editor-accent to-cyan-500 hover:shadow-glow-cyan text-slate-900 font-semibold transition-all hover:scale-105 active:scale-95"
+            disabled={parsing || success}
+            className="px-4 py-2 text-[12px] rounded-lg bg-gradient-to-r from-editor-accent to-cyan-500 hover:shadow-glow-cyan text-slate-900 font-semibold transition-all hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 flex items-center gap-1.5"
           >
-            解析并导入
+            {parsing && <Loader2 size={13} className="animate-spin" />}
+            {success ? '已导入 ✓' : parsing ? '解析中...' : '解析并导入'}
           </button>
         </div>
       </div>

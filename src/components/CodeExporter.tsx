@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { Copy, Check, ChevronDown, ChevronUp, Code, Sparkles, Upload, FileCode, Layers } from 'lucide-react';
 import { useAnimationStore } from '../store/animationStore';
-import { generateFullCss, generateKeyframesCss, generateWebAnimationsCode, generateAnimationTimelineCss, generateKeyframesWithEasing } from '../utils/cssGenerator';
+import { generateFullCss, generateKeyframesCss, generateWebAnimationsCode, generateKeyframesWithEasing, generateMultiAnimationCss } from '../utils/cssGenerator';
 
 export type ExportMode = 'standard' | 'waapi' | 'timeline';
 
