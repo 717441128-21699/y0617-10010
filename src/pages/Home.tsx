@@ -1,12 +1,46 @@
-import { Wand2 } from 'lucide-react';
+import { useEffect } from 'react';
+import { Wand2, Save, FileCode, Layers } from 'lucide-react';
 import PreviewCanvas from '@/components/PreviewCanvas';
 import PlaybackControls from '@/components/PlaybackControls';
 import Timeline from '@/components/Timeline';
 import PropertyPanel from '@/components/PropertyPanel';
 import BezierEditor from '@/components/BezierEditor';
 import CodeExporter from '@/components/CodeExporter';
+import UndoRedoButtons from '@/components/UndoRedoButtons';
+import ImportModal from '@/components/ImportModal';
+import DraftPanel from '@/components/DraftPanel';
+import { useAnimationStore } from '@/store/animationStore';
 
 export default function Home() {
+  const { importModalOpen, setImportModalOpen, showDraftPanel, setShowDraftPanel, undo, redo, saveDraft, canUndo, canRedo } = useAnimationStore();
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (canUndo()) undo();
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (canRedo()) redo();
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        const name = prompt('输入草稿名称:', `草稿 ${new Date().toLocaleString()}`);
+        if (name) saveDraft(name);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [undo, redo, saveDraft, canUndo, canRedo]);
+
   return (
     <div className="h-screen w-screen flex flex-col bg-editor-bg overflow-hidden">
       <header className="h-12 px-4 flex items-center justify-between border-b border-editor-border bg-editor-panel/80 backdrop-blur-md flex-shrink-0 z-30">
@@ -18,7 +52,7 @@ export default function Home() {
             CSS 动画编辑器
           </h1>
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-editor-accent/15 border border-editor-accent/30 text-editor-accent font-mono">
-            v1.0
+            v2.0
           </span>
         </div>
 
@@ -38,13 +72,51 @@ export default function Home() {
         </div>
 
         <div className="flex items-center gap-2">
+          <div className="hidden lg:flex items-center gap-1 border-r border-editor-border pr-3 mr-1">
+            <UndoRedoButtons />
+          </div>
+
+          <div className="hidden md:flex items-center gap-1 border-r border-editor-border pr-3 mr-1">
+            <button
+              onClick={() => setImportModalOpen(true)}
+              className="flex items-center gap-1 px-2 py-1 rounded text-[10px] text-slate-400 hover:text-slate-200 hover:bg-editor-border/50 transition-all"
+              title="导入 CSS @keyframes"
+            >
+              <FileCode size={12} />
+              <span className="hidden xl:inline">导入</span>
+            </button>
+            <button
+              onClick={() => {
+                const name = prompt('输入草稿名称:', `草稿 ${new Date().toLocaleString()}`);
+                if (name) saveDraft(name);
+              }}
+              className="flex items-center gap-1 px-2 py-1 rounded text-[10px] text-slate-400 hover:text-slate-200 hover:bg-editor-border/50 transition-all"
+              title="保存当前动画为草稿 (Ctrl+S)"
+            >
+              <Save size={12} />
+              <span className="hidden xl:inline">保存</span>
+            </button>
+            <button
+              onClick={() => setShowDraftPanel(!showDraftPanel)}
+              className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] transition-all ${
+                showDraftPanel
+                  ? 'text-editor-accent bg-editor-accent/20'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-editor-border/50'
+              }`}
+              title="草稿与预设"
+            >
+              <Layers size={12} />
+              <span className="hidden xl:inline">草稿</span>
+            </button>
+          </div>
+
           <span className="text-[11px] text-slate-500 hidden lg:block">
             @keyframes 可视化编辑器
           </span>
         </div>
       </header>
 
-      <div className="flex-1 flex min-h-0">
+      <div className="flex-1 flex min-h-0 relative">
         <BezierEditor />
 
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
@@ -59,6 +131,9 @@ export default function Home() {
           <PropertyPanel />
           <CodeExporter />
         </div>
+
+        {importModalOpen && <ImportModal />}
+        {showDraftPanel && <DraftPanel />}
       </div>
     </div>
   );

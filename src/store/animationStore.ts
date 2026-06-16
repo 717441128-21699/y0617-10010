@@ -1,4 +1,13 @@
 import { create } from 'zustand';
+import { produce } from 'immer';
+import type { Draft } from 'immer';
+import type { ParseResult } from '../utils/cssParser';
+import {
+  loadDrafts, loadPresets, saveDrafts, savePresets,
+  loadSnapSetting, saveSnapSetting,
+  createDraftFromState, importAnimationFromJson,
+  type SavedAnimation,
+} from '../utils/storage';
 
 export interface KeyframeProperties {
   translateX: number;
@@ -13,6 +22,7 @@ export interface Keyframe {
   id: string;
   percent: number;
   properties: KeyframeProperties;
+  easing?: string;
 }
 
 export interface EasingCurve {
@@ -30,6 +40,14 @@ export interface PreviewElement {
   background: string;
 }
 
+export interface HistoryState {
+  name: string;
+  duration: number;
+  keyframes: Keyframe[];
+  easingCurves: Record<string, EasingCurve>;
+  previewElement: PreviewElement;
+}
+
 export interface AnimationState {
   name: string;
   duration: number;
@@ -37,6 +55,8 @@ export interface AnimationState {
   selectedKeyframeId: string | null;
   selectedEasingPair: string | null;
   easingCurves: Record<string, EasingCurve>;
+  snapEnabled: boolean;
+  snapStep: number;
   playback: {
     isPlaying: boolean;
     speed: number;
@@ -45,12 +65,19 @@ export interface AnimationState {
   };
   previewElement: PreviewElement;
   copied: boolean;
+  importModalOpen: boolean;
+  showDraftPanel: boolean;
+  drafts: SavedAnimation[];
+  presets: SavedAnimation[];
+  past: HistoryState[];
+  future: HistoryState[];
 }
 
 export interface AnimationActions {
   setName: (name: string) => void;
   setDuration: (duration: number) => void;
-  addKeyframe: (percent: number) => void;
+  addKeyframe: (percent: number, properties?: Partial<KeyframeProperties>) => void;
+  addKeyframeAtCurrentTime: () => void;
   removeKeyframe: (id: string) => void;
   selectKeyframe: (id: string | null) => void;
   updateKeyframePercent: (id: string, percent: number) => void;
@@ -66,6 +93,23 @@ export interface AnimationActions {
   resetPlayback: () => void;
   updatePreviewElement: (element: Partial<PreviewElement>) => void;
   setCopied: (copied: boolean) => void;
+  setSnapEnabled: (enabled: boolean) => void;
+  setSnapStep: (step: number) => void;
+  setImportModalOpen: (open: boolean) => void;
+  setShowDraftPanel: (show: boolean) => void;
+  importFromCss: (result: ParseResult) => void;
+  undo: () => void;
+  redo: () => void;
+  canUndo: () => boolean;
+  canRedo: () => boolean;
+  saveDraft: (name?: string) => void;
+  loadDraft: (id: string) => void;
+  deleteDraft: (id: string) => void;
+  loadPreset: (id: string) => void;
+  exportToJson: () => string;
+  importFromJson: (json: string) => boolean;
+  jumpToPercent: (percent: number) => void;
+  addKeyframeAtPercent: (percent: number) => void;
 }
 
 const genId = () => Math.random().toString(36).substring(2, 11);
@@ -79,37 +123,65 @@ const defaultProps: KeyframeProperties = {
   opacity: 1,
 };
 
-const kf0: Keyframe = {
-  id: genId(),
-  percent: 0,
-  properties: { ...defaultProps },
-};
+function cloneStateForHistory(s: AnimationState): HistoryState {
+  return {
+    name: s.name,
+    duration: s.duration,
+    keyframes: JSON.parse(JSON.stringify(s.keyframes)),
+    easingCurves: JSON.parse(JSON.stringify(s.easingCurves)),
+    previewElement: JSON.parse(JSON.stringify(s.previewElement)),
+  };
+}
 
-const kf50: Keyframe = {
-  id: genId(),
-  percent: 50,
-  properties: { ...defaultProps, translateX: 120, rotate: 180, scaleX: 1.2, scaleY: 1.2 },
-};
+function createInitialKeyframes(): { kfs: Keyframe[]; ec: Record<string, EasingCurve> } {
+  const kf0: Keyframe = {
+    id: genId(),
+    percent: 0,
+    properties: { ...defaultProps },
+  };
+  const kf50: Keyframe = {
+    id: genId(),
+    percent: 50,
+    properties: { ...defaultProps, translateX: 120, rotate: 180, scaleX: 1.2, scaleY: 1.2 },
+  };
+  const kf100: Keyframe = {
+    id: genId(),
+    percent: 100,
+    properties: { ...defaultProps, translateX: 0, rotate: 360 },
+  };
+  const easingPair1 = `${kf0.id}-${kf50.id}`;
+  const easingPair2 = `${kf50.id}-${kf100.id}`;
+  return {
+    kfs: [kf0, kf50, kf100].sort((a, b) => a.percent - b.percent),
+    ec: {
+      [easingPair1]: { name: 'ease', p1x: 0.25, p1y: 0.1, p2x: 0.25, p2y: 1 },
+      [easingPair2]: { name: 'ease-out', p1x: 0, p1y: 0, p2x: 0.58, p2y: 1 },
+    },
+  };
+}
 
-const kf100: Keyframe = {
-  id: genId(),
-  percent: 100,
-  properties: { ...defaultProps, translateX: 0, rotate: 360 },
-};
+const MAX_HISTORY = 50;
 
-const easingPair1 = `${kf0.id}-${kf50.id}`;
-const easingPair2 = `${kf50.id}-${kf100.id}`;
+function pushHistory(state: AnimationState): void {
+  const historyEntry = cloneStateForHistory(state);
+  state.past.push(historyEntry);
+  if (state.past.length > MAX_HISTORY) {
+    state.past.shift();
+  }
+  state.future.length = 0;
+}
+
+const initialData = createInitialKeyframes();
 
 export const useAnimationStore = create<AnimationState & AnimationActions>((set, get) => ({
   name: 'myAnimation',
   duration: 3,
-  keyframes: [kf0, kf50, kf100].sort((a, b) => a.percent - b.percent),
+  keyframes: initialData.kfs,
   selectedKeyframeId: null,
   selectedEasingPair: null,
-  easingCurves: {
-    [easingPair1]: { name: 'ease', p1x: 0.25, p1y: 0.1, p2x: 0.25, p2y: 1 },
-    [easingPair2]: { name: 'ease-out', p1x: 0, p1y: 0, p2x: 0.58, p2y: 1 },
-  },
+  easingCurves: initialData.ec,
+  snapEnabled: loadSnapSetting(),
+  snapStep: 5,
   playback: {
     isPlaying: false,
     speed: 1,
@@ -123,92 +195,155 @@ export const useAnimationStore = create<AnimationState & AnimationActions>((set,
     background: 'linear-gradient(135deg, #22d3ee, #a855f7)',
   },
   copied: false,
+  importModalOpen: false,
+  showDraftPanel: false,
+  drafts: loadDrafts(),
+  presets: loadPresets(),
+  past: [],
+  future: [],
 
-  setName: (name) => set({ name }),
-  setDuration: (duration) => set({ duration: Math.max(0.1, duration) }),
+  canUndo: () => get().past.length > 0,
+  canRedo: () => get().future.length > 0,
 
-  addKeyframe: (percent) => {
-    const { keyframes } = get();
-    const exists = keyframes.find((k) => Math.abs(k.percent - percent) < 0.5);
-    if (exists) return;
-    let properties = { ...defaultProps };
-    const sorted = [...keyframes].sort((a, b) => a.percent - b.percent);
-    for (let i = 0; i < sorted.length - 1; i++) {
-      if (percent > sorted[i].percent && percent < sorted[i + 1].percent) {
-        const t = (percent - sorted[i].percent) / (sorted[i + 1].percent - sorted[i].percent);
-        properties = {
-          translateX: sorted[i].properties.translateX + (sorted[i + 1].properties.translateX - sorted[i].properties.translateX) * t,
-          translateY: sorted[i].properties.translateY + (sorted[i + 1].properties.translateY - sorted[i].properties.translateY) * t,
-          rotate: sorted[i].properties.rotate + (sorted[i + 1].properties.rotate - sorted[i].properties.rotate) * t,
-          scaleX: sorted[i].properties.scaleX + (sorted[i + 1].properties.scaleX - sorted[i].properties.scaleX) * t,
-          scaleY: sorted[i].properties.scaleY + (sorted[i + 1].properties.scaleY - sorted[i].properties.scaleY) * t,
-          opacity: sorted[i].properties.opacity + (sorted[i + 1].properties.opacity - sorted[i].properties.opacity) * t,
-        };
-        break;
-      }
+  setName: (name) => set(
+    produce((s: AnimationState) => {
+      pushHistory(s);
+      s.name = name;
+    })
+  ),
+
+  setDuration: (duration) => set(
+    produce((s: AnimationState) => {
+      pushHistory(s);
+      s.duration = Math.max(0.1, duration);
+    })
+  ),
+
+  addKeyframeAtPercent: (percent) => {
+    const { keyframes, easingCurves, snapEnabled, snapStep } = get();
+    let finalPercent = percent;
+    if (snapEnabled) {
+      finalPercent = Math.round(percent / snapStep) * snapStep;
+    } else {
+      finalPercent = Math.round(percent * 100) / 100;
     }
-    const newKf: Keyframe = { id: genId(), percent, properties };
-    const newKeyframes = [...keyframes, newKf].sort((a, b) => a.percent - b.percent);
-
-    const newEasingCurves = { ...get().easingCurves };
-    const idx = newKeyframes.findIndex((k) => k.id === newKf.id);
-    if (idx > 0) {
-      const prevPair = `${newKeyframes[idx - 1].id}-${newKf.id}`;
-      newEasingCurves[prevPair] = { name: 'ease', p1x: 0.25, p1y: 0.1, p2x: 0.25, p2y: 1 };
+    const exists = keyframes.find((k) => Math.abs(k.percent - finalPercent) < 0.01);
+    if (exists) {
+      get().selectKeyframe(exists.id);
+      return;
     }
-    if (idx < newKeyframes.length - 1) {
-      const nextPair = `${newKf.id}-${newKeyframes[idx + 1].id}`;
-      newEasingCurves[nextPair] = { name: 'ease', p1x: 0.25, p1y: 0.1, p2x: 0.25, p2y: 1 };
-    }
+    set(
+      produce((s: AnimationState) => {
+        pushHistory(s);
+        let properties = { ...defaultProps };
+        const sorted = [...s.keyframes].sort((a, b) => a.percent - b.percent);
+        for (let i = 0; i < sorted.length - 1; i++) {
+          if (finalPercent > sorted[i].percent && finalPercent < sorted[i + 1].percent) {
+            const t = (finalPercent - sorted[i].percent) / (sorted[i + 1].percent - sorted[i].percent);
+            properties = {
+              translateX: sorted[i].properties.translateX + (sorted[i + 1].properties.translateX - sorted[i].properties.translateX) * t,
+              translateY: sorted[i].properties.translateY + (sorted[i + 1].properties.translateY - sorted[i].properties.translateY) * t,
+              rotate: sorted[i].properties.rotate + (sorted[i + 1].properties.rotate - sorted[i].properties.rotate) * t,
+              scaleX: sorted[i].properties.scaleX + (sorted[i + 1].properties.scaleX - sorted[i].properties.scaleX) * t,
+              scaleY: sorted[i].properties.scaleY + (sorted[i + 1].properties.scaleY - sorted[i].properties.scaleY) * t,
+              opacity: sorted[i].properties.opacity + (sorted[i + 1].properties.opacity - sorted[i].properties.opacity) * t,
+            };
+            break;
+          }
+        }
+        const newKf: Keyframe = { id: genId(), percent: finalPercent, properties };
+        s.keyframes = [...s.keyframes, newKf].sort((a, b) => a.percent - b.percent);
 
-    set({ keyframes: newKeyframes, easingCurves: newEasingCurves, selectedKeyframeId: newKf.id });
+        const idx = s.keyframes.findIndex((k) => k.id === newKf.id);
+        if (idx > 0) {
+          const prevPair = `${s.keyframes[idx - 1].id}-${newKf.id}`;
+          s.easingCurves[prevPair] = { name: 'ease', p1x: 0.25, p1y: 0.1, p2x: 0.25, p2y: 1 };
+        }
+        if (idx < s.keyframes.length - 1) {
+          const nextPair = `${newKf.id}-${s.keyframes[idx + 1].id}`;
+          s.easingCurves[nextPair] = { name: 'ease', p1x: 0.25, p1y: 0.1, p2x: 0.25, p2y: 1 };
+        }
+        s.selectedKeyframeId = newKf.id;
+      })
+    );
+  },
+
+  addKeyframe: (percent, properties) => {
+    get().addKeyframeAtPercent(percent);
+    if (properties && get().selectedKeyframeId) {
+      const id = get().selectedKeyframeId;
+      set(
+        produce((s: AnimationState) => {
+          const kf = s.keyframes.find((k: Keyframe) => k.id === id);
+          if (kf) {
+            Object.assign(kf.properties, properties);
+          }
+        })
+      );
+    }
+  },
+
+  addKeyframeAtCurrentTime: () => {
+    const { playback } = get();
+    get().addKeyframeAtPercent(playback.currentTime);
   },
 
   removeKeyframe: (id) => {
-    const { keyframes, easingCurves } = get();
+    const { keyframes } = get();
     if (keyframes.length <= 2) return;
     const kf = keyframes.find((k) => k.id === id);
     if (!kf || kf.percent === 0 || kf.percent === 100) return;
-    const newKeyframes = keyframes.filter((k) => k.id !== id);
-    const newEasingCurves: Record<string, EasingCurve> = {};
-    Object.entries(easingCurves).forEach(([pair, curve]) => {
-      if (!pair.includes(id)) newEasingCurves[pair] = curve;
-    });
-    set({
-      keyframes: newKeyframes,
-      easingCurves: newEasingCurves,
-      selectedKeyframeId: get().selectedKeyframeId === id ? null : get().selectedKeyframeId,
-    });
+    set(
+      produce((s: AnimationState) => {
+        pushHistory(s);
+        s.keyframes = s.keyframes.filter((k: Keyframe) => k.id !== id);
+        Object.keys(s.easingCurves).forEach((pair) => {
+          if (pair.includes(id)) delete s.easingCurves[pair];
+        });
+        if (s.selectedKeyframeId === id) s.selectedKeyframeId = null;
+      })
+    );
   },
 
   selectKeyframe: (id) => set({ selectedKeyframeId: id, selectedEasingPair: null }),
   selectEasingPair: (pair) => set({ selectedEasingPair: pair, selectedKeyframeId: null }),
 
   updateKeyframePercent: (id, percent) => {
-    const { keyframes } = get();
-    const sorted = [...keyframes].sort((a, b) => a.percent - b.percent);
-    const idx = sorted.findIndex((k) => k.id === id);
-    if (idx < 0) return;
-    const minP = idx === 0 ? 0 : sorted[idx - 1].percent + 0.5;
-    const maxP = idx === sorted.length - 1 ? 100 : sorted[idx + 1].percent - 0.5;
-    const clamped = Math.max(minP, Math.min(maxP, percent));
-    const newKeyframes = keyframes.map((k) => (k.id === id ? { ...k, percent: clamped } : k));
-    set({ keyframes: newKeyframes });
+    set(
+      produce((s: AnimationState) => {
+        pushHistory(s);
+        const sorted = [...s.keyframes].sort((a, b) => a.percent - b.percent);
+        const idx = sorted.findIndex((k) => k.id === id);
+        if (idx < 0) return;
+        const minP = idx === 0 ? 0 : sorted[idx - 1].percent + 0.01;
+        const maxP = idx === sorted.length - 1 ? 100 : sorted[idx + 1].percent - 0.01;
+        const clamped = Math.max(minP, Math.min(maxP, percent));
+        const kf = s.keyframes.find((k: Keyframe) => k.id === id);
+        if (kf) kf.percent = clamped;
+      })
+    );
   },
 
   updateKeyframeProperty: (id, prop, value) => {
-    set({
-      keyframes: get().keyframes.map((k) =>
-        k.id === id ? { ...k, properties: { ...k.properties, [prop]: value } } : k
-      ),
-    });
+    set(
+      produce((s: AnimationState) => {
+        pushHistory(s);
+        const kf = s.keyframes.find((k: Keyframe) => k.id === id);
+        if (kf) {
+          kf.properties[prop] = value;
+        }
+      })
+    );
   },
 
   updateEasingCurve: (pair, curve) => {
-    const current = get().easingCurves[pair] || { name: 'custom', p1x: 0, p1y: 0, p2x: 1, p2y: 1 };
-    set({
-      easingCurves: { ...get().easingCurves, [pair]: { ...current, ...curve } },
-    });
+    set(
+      produce((s: AnimationState) => {
+        pushHistory(s);
+        const current = s.easingCurves[pair] || { name: 'custom', p1x: 0, p1y: 0, p2x: 1, p2y: 1 };
+        s.easingCurves[pair] = { ...current, ...curve };
+      })
+    );
   },
 
   play: () => set({ playback: { ...get().playback, isPlaying: true } }),
@@ -219,6 +354,156 @@ export const useAnimationStore = create<AnimationState & AnimationActions>((set,
   setCurrentTime: (time) => set({ playback: { ...get().playback, currentTime: Math.max(0, Math.min(100, time)) } }),
   resetPlayback: () => set({ playback: { ...get().playback, isPlaying: false, currentTime: 0 } }),
 
-  updatePreviewElement: (element) => set({ previewElement: { ...get().previewElement, ...element } }),
+  updatePreviewElement: (element) => set(
+    produce((s: AnimationState) => {
+      Object.assign(s.previewElement, element);
+    })
+  ),
+
   setCopied: (copied) => set({ copied }),
+
+  setSnapEnabled: (enabled) => {
+    saveSnapSetting(enabled);
+    set({ snapEnabled: enabled });
+  },
+  setSnapStep: (step) => set({ snapStep: Math.max(0.1, step) }),
+
+  setImportModalOpen: (open) => set({ importModalOpen: open }),
+  setShowDraftPanel: (show) => set({ showDraftPanel: show }),
+
+  jumpToPercent: (percent) => {
+    get().setCurrentTime(Math.max(0, Math.min(100, percent)));
+  },
+
+  importFromCss: (result) => {
+    set(
+      produce((s: AnimationState) => {
+        pushHistory(s);
+        s.name = result.name;
+        s.keyframes = result.keyframes;
+        s.easingCurves = result.easingCurves;
+        if (result.duration) s.duration = result.duration;
+        s.selectedKeyframeId = null;
+        s.selectedEasingPair = null;
+        s.playback.currentTime = 0;
+        s.playback.isPlaying = false;
+      })
+    );
+  },
+
+  undo: () => {
+    set(
+      produce((s: AnimationState) => {
+        if (s.past.length === 0) return;
+        const prev = s.past.pop()!;
+        const current = cloneStateForHistory(s);
+        s.future.push(current);
+        s.name = prev.name;
+        s.duration = prev.duration;
+        s.keyframes = prev.keyframes;
+        s.easingCurves = prev.easingCurves;
+        s.previewElement = prev.previewElement;
+        s.selectedKeyframeId = null;
+        s.selectedEasingPair = null;
+      })
+    );
+  },
+
+  redo: () => {
+    set(
+      produce((s: AnimationState) => {
+        if (s.future.length === 0) return;
+        const next = s.future.pop()!;
+        const current = cloneStateForHistory(s);
+        s.past.push(current);
+        s.name = next.name;
+        s.duration = next.duration;
+        s.keyframes = next.keyframes;
+        s.easingCurves = next.easingCurves;
+        s.previewElement = next.previewElement;
+        s.selectedKeyframeId = null;
+        s.selectedEasingPair = null;
+      })
+    );
+  },
+
+  saveDraft: (name) => {
+    const draft = createDraftFromState(get(), name);
+    set(
+      produce((s: AnimationState) => {
+        s.drafts = [draft, ...s.drafts];
+      })
+    );
+    saveDrafts(get().drafts);
+  },
+
+  loadDraft: (id) => {
+    const draft = get().drafts.find((d) => d.id === id);
+    if (!draft) return;
+    set(
+      produce((s: AnimationState) => {
+        pushHistory(s);
+        s.name = draft.data.name;
+        s.duration = draft.data.duration;
+        s.keyframes = JSON.parse(JSON.stringify(draft.data.keyframes));
+        s.easingCurves = JSON.parse(JSON.stringify(draft.data.easingCurves));
+        s.previewElement = JSON.parse(JSON.stringify(draft.data.previewElement));
+        s.selectedKeyframeId = null;
+        s.selectedEasingPair = null;
+        s.playback.currentTime = 0;
+        s.playback.isPlaying = false;
+      })
+    );
+  },
+
+  deleteDraft: (id) => {
+    const newDrafts = get().drafts.filter((d) => d.id !== id);
+    set({ drafts: newDrafts });
+    saveDrafts(newDrafts);
+  },
+
+  loadPreset: (id) => {
+    const preset = get().presets.find((p) => p.id === id);
+    if (!preset) return;
+    set(
+      produce((s: AnimationState) => {
+        pushHistory(s);
+        s.name = preset.data.name;
+        s.duration = preset.data.duration;
+        s.keyframes = JSON.parse(JSON.stringify(preset.data.keyframes));
+        s.easingCurves = JSON.parse(JSON.stringify(preset.data.easingCurves));
+        s.previewElement = JSON.parse(JSON.stringify(preset.data.previewElement));
+        s.selectedKeyframeId = null;
+        s.selectedEasingPair = null;
+        s.playback.currentTime = 0;
+        s.playback.isPlaying = false;
+      })
+    );
+  },
+
+  exportToJson: () => {
+    return JSON.stringify(createDraftFromState(get()), null, 2);
+  },
+
+  importFromJson: (json) => {
+    const result = importAnimationFromJson(json);
+    if (!result) return false;
+    set(
+      produce((s: AnimationState) => {
+        pushHistory(s);
+        s.name = result.data.name;
+        s.duration = result.data.duration;
+        s.keyframes = JSON.parse(JSON.stringify(result.data.keyframes));
+        s.easingCurves = JSON.parse(JSON.stringify(result.data.easingCurves));
+        s.previewElement = JSON.parse(JSON.stringify(result.data.previewElement));
+        s.selectedKeyframeId = null;
+        s.selectedEasingPair = null;
+        s.playback.currentTime = 0;
+        s.playback.isPlaying = false;
+        s.drafts = [result, ...s.drafts];
+      })
+    );
+    saveDrafts(get().drafts);
+    return true;
+  },
 }));

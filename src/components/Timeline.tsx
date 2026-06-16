@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Trash2, Plus } from 'lucide-react';
+import { Trash2, Plus, Magnet, CircleSlash2, Crosshair } from 'lucide-react';
 import { useAnimationStore } from '../store/animationStore';
 
 export default function Timeline() {
@@ -7,26 +7,38 @@ export default function Timeline() {
     keyframes,
     selectedKeyframeId,
     selectKeyframe,
-    addKeyframe,
+    addKeyframeAtPercent,
     updateKeyframePercent,
     removeKeyframe,
     playback,
     setCurrentTime,
+    snapEnabled,
+    setSnapEnabled,
+    addKeyframeAtCurrentTime,
+    jumpToPercent,
   } = useAnimationStore();
 
   const trackRef = useRef<HTMLDivElement>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const dragStartX = useRef(0);
   const dragStartPercent = useRef(0);
+  const [jumpInput, setJumpInput] = useState('');
 
   const sortedKfs = [...keyframes].sort((a, b) => a.percent - b.percent);
 
-  const getPercentFromX = (clientX: number, snap = true) => {
+  const formatPct = (p: number) => {
+    if (!snapEnabled) return p.toFixed(2);
+    return Number.isInteger(p) ? p.toString() : p.toFixed(1);
+  };
+
+  const getPercentFromX = (clientX: number) => {
     const rect = trackRef.current!.getBoundingClientRect();
     let pct = ((clientX - rect.left) / rect.width) * 100;
     pct = Math.max(0, Math.min(100, pct));
-    if (snap) {
+    if (snapEnabled) {
       pct = Math.round(pct / 5) * 5;
+    } else {
+      pct = Math.round(pct * 100) / 100;
     }
     return pct;
   };
@@ -35,24 +47,23 @@ export default function Timeline() {
     if (draggingId) return;
     const target = e.target as HTMLElement;
     if (target.closest('[data-kf]')) return;
-    const pct = getPercentFromX(e.clientX, true);
+    const pct = getPercentFromX(e.clientX);
     if (pct === 0 || pct === 100) {
       setCurrentTime(pct);
       return;
     }
-    const exists = keyframes.find((k) => Math.abs(k.percent - pct) < 0.1);
-    if (!exists) {
-      addKeyframe(pct);
-    } else {
-      selectKeyframe(exists.id);
-    }
+    addKeyframeAtPercent(pct);
   };
 
   const handlePlayheadMouseDown = (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
     const onMouseMove = (ev: MouseEvent) => {
-      setCurrentTime(getPercentFromX(ev.clientX, false));
+      const rect = trackRef.current!.getBoundingClientRect();
+      let pct = ((ev.clientX - rect.left) / rect.width) * 100;
+      pct = Math.max(0, Math.min(100, pct));
+      if (!snapEnabled) pct = Math.round(pct * 100) / 100;
+      setCurrentTime(pct);
     };
     const onMouseUp = () => {
       document.removeEventListener('mousemove', onMouseMove);
@@ -76,7 +87,11 @@ export default function Timeline() {
       const rect = trackRef.current!.getBoundingClientRect();
       const deltaPct = (dx / rect.width) * 100;
       let newPct = dragStartPercent.current + deltaPct;
-      newPct = Math.round(newPct / 5) * 5;
+      if (snapEnabled) {
+        newPct = Math.round(newPct / 5) * 5;
+      } else {
+        newPct = Math.round(newPct * 100) / 100;
+      }
       updateKeyframePercent(id, newPct);
     };
     const onMouseUp = () => {
@@ -88,28 +103,87 @@ export default function Timeline() {
     document.addEventListener('mouseup', onMouseUp);
   };
 
+  const handleJump = (e: React.FormEvent) => {
+    e.preventDefault();
+    const pct = parseFloat(jumpInput);
+    if (!isNaN(pct) && pct >= 0 && pct <= 100) {
+      jumpToPercent(pct);
+      setJumpInput('');
+    }
+  };
+
+  const handleAddAtCurrent = () => {
+    addKeyframeAtCurrentTime();
+  };
+
   const ticks = Array.from({ length: 21 }, (_, i) => i * 5);
 
   return (
-    <div className="h-36 bg-editor-panel border-t border-editor-border flex flex-col">
+    <div className="h-40 bg-editor-panel border-t border-editor-border flex flex-col">
       <div className="flex items-center justify-between px-4 py-2 border-b border-editor-border/50">
-        <div className="flex items-center gap-2 text-xs">
-          <span className="font-display font-semibold text-slate-200">时间轴</span>
-          <span className="text-slate-500">|</span>
-          <span className="font-mono text-slate-400">{keyframes.length} 关键帧</span>
-          <span className="text-slate-500">点击空白添加关键帧</span>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 text-xs">
+            <span className="font-display font-semibold text-slate-200">时间轴</span>
+            <span className="text-slate-500">|</span>
+            <span className="font-mono text-slate-400">{keyframes.length} 关键帧</span>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <form onSubmit={handleJump} className="flex items-center gap-1">
+              <Crosshair size={12} className="text-slate-400" />
+              <input
+                type="number"
+                placeholder="跳转%"
+                value={jumpInput}
+                onChange={(e) => setJumpInput(e.target.value)}
+                min={0}
+                max={100}
+                step={snapEnabled ? 5 : 0.01}
+                className="w-16 px-1.5 py-0.5 text-[10px] font-mono bg-editor-bg border border-editor-border rounded text-slate-200 focus:outline-none focus:border-editor-accent"
+              />
+              <button
+                type="submit"
+                className="px-1.5 py-0.5 text-[10px] bg-editor-border hover:bg-slate-600 text-slate-300 rounded transition-colors"
+              >
+                跳转
+              </button>
+            </form>
+
+            <button
+              onClick={handleAddAtCurrent}
+              className="flex items-center gap-1 px-2 py-1 text-[10px] rounded bg-editor-accent/20 text-editor-accent border border-editor-accent/30 hover:bg-editor-accent/30 transition-colors"
+              title="在当前播放位置添加关键帧"
+            >
+              <Plus size={10} />
+              当前位置
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setSnapEnabled(!snapEnabled)}
+            className={`flex items-center gap-1.5 px-2 py-1 rounded text-[10px] transition-all ${
+              snapEnabled
+                ? 'bg-editor-warn/20 text-editor-warn border border-editor-warn/40'
+                : 'bg-editor-bg text-slate-400 border border-editor-border hover:text-slate-300'
+            }`}
+            title={snapEnabled ? '关闭吸附' : '开启5%吸附'}
+          >
+            {snapEnabled ? <Magnet size={12} /> : <CircleSlash2 size={12} />}
+            {snapEnabled ? '吸附 5%' : '精细模式'}
+          </button>
+
           <div className="flex items-center gap-1 px-2 py-1 rounded bg-editor-bg border border-editor-border">
             <Plus size={12} className="text-editor-accent" />
             <span className="text-[10px] font-mono text-slate-300">
-              {playback.currentTime.toFixed(0)}%
+              t = {formatPct(playback.currentTime)}%
             </span>
           </div>
         </div>
       </div>
 
-      <div className="flex-1 relative px-4 pt-2 pb-4">
+      <div className="flex-1 relative px-4 pt-2 pb-2">
         <div className="relative h-6 mb-1">
           {ticks.map((t) => (
             <div
@@ -132,7 +206,7 @@ export default function Timeline() {
         <div
           ref={trackRef}
           onClick={handleTrackClick}
-          className="relative h-14 mt-2 cursor-pointer group"
+          className="relative h-14 mt-1 cursor-pointer group"
         >
           <div className="absolute top-1/2 -translate-y-1/2 left-0 right-0 h-1.5 rounded-full bg-editor-border/80" />
           <div
@@ -145,7 +219,7 @@ export default function Timeline() {
             className="absolute top-1/2 -translate-y-1/2 z-20 cursor-ew-resize"
             style={{ left: `${playback.currentTime}%` }}
           >
-            <div className="w-0.5 h-10 -translate-x-1/2 bg-editor-warn" />
+            <div className="w-0.5 h-12 -translate-x-1/2 bg-editor-warn" />
             <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-3 h-3 rotate-45 bg-editor-warn shadow-glow-cyan" />
           </div>
 
@@ -180,7 +254,7 @@ export default function Timeline() {
                     e.stopPropagation();
                     removeKeyframe(kf.id);
                   }}
-                  className="absolute -top-8 left-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-red-500 hover:bg-red-400 text-white flex items-center justify-center shadow-lg transition-opacity"
+                  className="absolute -top-8 left-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-red-500 hover:bg-red-400 text-white flex items-center justify-center shadow-lg"
                   title="删除关键帧"
                 >
                   <Trash2 size={11} />
@@ -191,7 +265,7 @@ export default function Timeline() {
                   selectedKeyframeId === kf.id ? 'text-editor-keyframe font-semibold' : 'text-slate-500'
                 }`}
               >
-                {kf.percent}%
+                {formatPct(kf.percent)}%
               </span>
             </div>
           ))}

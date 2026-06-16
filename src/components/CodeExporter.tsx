@@ -1,18 +1,28 @@
 import { useState, useMemo } from 'react';
-import { Copy, Check, ChevronDown, ChevronUp, Code, Sparkles } from 'lucide-react';
+import { Copy, Check, ChevronDown, ChevronUp, Code, Sparkles, Upload, FileCode, Layers } from 'lucide-react';
 import { useAnimationStore } from '../store/animationStore';
-import { generateFullCss, generateKeyframesCss } from '../utils/cssGenerator';
+import { generateFullCss, generateKeyframesCss, generateWebAnimationsCode, generateAnimationTimelineCss, generateKeyframesWithEasing } from '../utils/cssGenerator';
+
+export type ExportMode = 'standard' | 'waapi' | 'timeline';
 
 export default function CodeExporter() {
   const state = useAnimationStore();
-  const { setCopied, copied, setName, name } = useAnimationStore();
+  const { setCopied, copied, setName, name, setImportModalOpen } = useAnimationStore();
   const [expanded, setExpanded] = useState(true);
   const [viewMode, setViewMode] = useState<'full' | 'keyframes'>('full');
+  const [exportMode, setExportMode] = useState<ExportMode>('standard');
 
   const fullCss = useMemo(() => generateFullCss(state), [state]);
   const kfCss = useMemo(() => generateKeyframesCss(state), [state]);
+  const kfWithEasingCss = useMemo(() => generateKeyframesWithEasing(state), [state]);
+  const waapiCode = useMemo(() => generateWebAnimationsCode(state), [state]);
+  const timelineCode = useMemo(() => generateAnimationTimelineCss(state), [state]);
 
-  const displayCode = viewMode === 'full' ? fullCss : kfCss;
+  const displayCode = useMemo(() => {
+    if (exportMode === 'waapi') return waapiCode;
+    if (exportMode === 'timeline') return timelineCode;
+    return viewMode === 'full' ? fullCss : kfWithEasingCss;
+  }, [exportMode, viewMode, fullCss, kfWithEasingCss, waapiCode, timelineCode]);
 
   const handleCopy = async () => {
     try {
@@ -34,28 +44,13 @@ export default function CodeExporter() {
           </h2>
         </div>
         <div className="flex items-center gap-1">
-          <div className="flex rounded bg-editor-bg border border-editor-border overflow-hidden">
-            <button
-              onClick={() => setViewMode('full')}
-              className={`px-2 py-0.5 text-[10px] font-mono transition-all ${
-                viewMode === 'full'
-                  ? 'bg-editor-accent/20 text-editor-accent'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              完整
-            </button>
-            <button
-              onClick={() => setViewMode('keyframes')}
-              className={`px-2 py-0.5 text-[10px] font-mono transition-all ${
-                viewMode === 'keyframes'
-                  ? 'bg-editor-accent/20 text-editor-accent'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              @keyframes
-            </button>
-          </div>
+          <button
+            onClick={() => setImportModalOpen(true)}
+            className="w-6 h-6 flex items-center justify-center rounded hover:bg-editor-accent/20 text-slate-400 hover:text-editor-accent transition-all"
+            title="导入 CSS @keyframes"
+          >
+            <Upload size={13} />
+          </button>
           <button
             onClick={() => setExpanded(!expanded)}
             className="w-6 h-6 flex items-center justify-center rounded hover:bg-editor-border/50 text-slate-400 hover:text-slate-200 transition-all"
@@ -76,6 +71,72 @@ export default function CodeExporter() {
               className="flex-1 px-2 py-1 text-xs font-mono bg-editor-bg border border-editor-border rounded text-slate-200 focus:outline-none focus:border-editor-accent"
             />
             <Sparkles size={12} className="text-editor-warn" />
+          </div>
+
+          <div className="px-4 py-2 border-b border-editor-border/30 flex flex-col gap-2">
+            <div className="flex items-center gap-1">
+              <Layers size={11} className="text-slate-500" />
+              <span className="text-[10px] text-slate-500">导出模式:</span>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              <button
+                onClick={() => setExportMode('standard')}
+                className={`flex items-center gap-1 px-2 py-1 text-[10px] font-mono rounded border transition-all ${
+                  exportMode === 'standard'
+                    ? 'bg-editor-accent/20 text-editor-accent border-editor-accent/40'
+                    : 'bg-editor-bg text-slate-400 border-editor-border hover:text-slate-200'
+                }`}
+              >
+                <FileCode size={10} />
+                标准 CSS
+              </button>
+              <button
+                onClick={() => setExportMode('waapi')}
+                className={`flex items-center gap-1 px-2 py-1 text-[10px] font-mono rounded border transition-all ${
+                  exportMode === 'waapi'
+                    ? 'bg-editor-accent/20 text-editor-accent border-editor-accent/40'
+                    : 'bg-editor-bg text-slate-400 border-editor-border hover:text-slate-200'
+                }`}
+              >
+                <Code size={10} />
+                WAAPI
+              </button>
+              <button
+                onClick={() => setExportMode('timeline')}
+                className={`flex items-center gap-1 px-2 py-1 text-[10px] font-mono rounded border transition-all ${
+                  exportMode === 'timeline'
+                    ? 'bg-editor-accent/20 text-editor-accent border-editor-accent/40'
+                    : 'bg-editor-bg text-slate-400 border-editor-border hover:text-slate-200'
+                }`}
+              >
+                <Layers size={10} />
+                Timeline
+              </button>
+            </div>
+            {exportMode === 'standard' && (
+              <div className="flex rounded bg-editor-bg border border-editor-border overflow-hidden">
+                <button
+                  onClick={() => setViewMode('full')}
+                  className={`px-2 py-0.5 text-[10px] font-mono transition-all ${
+                    viewMode === 'full'
+                      ? 'bg-editor-accent/20 text-editor-accent'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  完整
+                </button>
+                <button
+                  onClick={() => setViewMode('keyframes')}
+                  className={`px-2 py-0.5 text-[10px] font-mono transition-all ${
+                    viewMode === 'keyframes'
+                      ? 'bg-editor-accent/20 text-editor-accent'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  @keyframes
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="flex-1 relative">
