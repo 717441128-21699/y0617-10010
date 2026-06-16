@@ -140,39 +140,56 @@ const ${name}Options = {
 // anim.currentTime = 1000;`;
 }
 
-function buildSegmentKeyframes(segName: string, from: Keyframe, to: Keyframe): string {
-  const fromLines = propsToLines(from.properties, '    ');
-  const toLines = propsToLines(to.properties, '    ');
+function buildFullSpanSegment(
+  segName: string,
+  startPct: number,
+  endPct: number,
+  fromProps: KeyframeProperties,
+  toProps: KeyframeProperties
+): string {
+  const fromLines = propsToLines(fromProps, '    ');
+  const toLines = propsToLines(toProps, '    ');
   if (fromLines.length === 0 && toLines.length === 0) return '';
-  return `@keyframes ${segName} {\n  from {\n${fromLines.join('\n')}\n  }\n  to {\n${toLines.join('\n')}\n  }\n}`;
+
+  const sp = formatPercent(startPct);
+  const ep = formatPercent(endPct);
+
+  if (startPct === 0) {
+    return `@keyframes ${segName} {\n  ${sp} {\n${fromLines.join('\n')}\n  }\n  ${ep} {\n${toLines.join('\n')}\n  }\n  100% {\n${toLines.join('\n')}\n  }\n}`;
+  }
+  if (Math.abs(endPct - 100) < 0.01) {
+    return `@keyframes ${segName} {\n  0% {\n${fromLines.join('\n')}\n  }\n  ${sp} {\n${fromLines.join('\n')}\n  }\n  ${ep} {\n${toLines.join('\n')}\n  }\n}`;
+  }
+  return `@keyframes ${segName} {\n  0% {\n${fromLines.join('\n')}\n  }\n  ${sp} {\n${fromLines.join('\n')}\n  }\n  ${ep} {\n${toLines.join('\n')}\n  }\n  100% {\n${toLines.join('\n')}\n  }\n}`;
 }
 
 export function generateMultiAnimationCss(state: AnimationState): string {
   const sorted = [...state.keyframes].sort((a, b) => a.percent - b.percent);
   const name = state.name || 'animation';
   const totalDur = state.duration;
-  const segs: Array<{
-    segName: string; easing: string; dur: number; delay: number }> = [];
+  const segs: Array<{ segName: string; easing: string; spanPct: [number, number] }> = [];
   const kfDefs: string[] = [];
-  let acc = 0;
+
   for (let i = 0; i < sorted.length - 1; i++) {
     const from = sorted[i];
     const to = sorted[i + 1];
-    const span = (to.percent - from.percent) / 100;
-    const dur = totalDur * span;
     const easing = getTransitionEasing(state.easingCurves, from.id, to.id);
     const segName = `${name}_s${i + 1}`;
-    segs.push({ segName, easing, dur, delay: acc });
-    const def = buildSegmentKeyframes(segName, from, to);
+    segs.push({ segName, easing, spanPct: [from.percent, to.percent] });
+    const def = buildFullSpanSegment(
+      segName,
+      from.percent,
+      to.percent,
+      from.properties,
+      to.properties
+    );
     if (def) kfDefs.push(def);
-    acc += dur;
   }
 
   const animNames = segs.map((s) => s.segName).join(',\n    ');
-  const animDurs = segs.map((s) => `${formatNum(s.dur, 3)}s`).join(', ');
-  const animDelays = segs.map((s) => `${formatNum(s.delay, 3)}s`).join(', ');
+  const animDurs = segs.map(() => `${formatNum(totalDur, 3)}s`).join(', ');
   const animEasings = segs.map((s) => s.easing).join(', ');
-  const animFills = segs.map(() => 'forwards').join(', ');
+  const animFills = segs.map(() => 'both').join(', ');
   const iter = state.playback.loop ? 'infinite' : '1';
 
   const first = sorted[0];
@@ -180,8 +197,8 @@ export function generateMultiAnimationCss(state: AnimationState): string {
   const result: string[] = [];
   result.push('/* =====================================================');
   result.push(`   分段 @keyframes 版本 — 兼容性 Chrome 43+, Firefox 16+, Safari 9+`);
-  result.push(`   每段动画用独立的 @keyframes + animation-delay 依次衔接`);
-  result.push(`   多段缓动节奏和编辑器预览完全一致，无需 JS`);
+  result.push(`   每段独立 @keyframes 在整个动画时长内按百分比窗口切换`);
+  result.push(`   循环播放时严格按 1→2→3→… 顺序一轮轮执行，不会堆叠`);
   result.push('   ===================================================== */');
   result.push('');
   result.push(...kfDefs);
@@ -190,7 +207,6 @@ export function generateMultiAnimationCss(state: AnimationState): string {
   if (initialLines.length > 0) result.push(...initialLines);
   result.push(`  animation-name:\n    ${animNames};`);
   result.push(`  animation-duration: ${animDurs};`);
-  result.push(`  animation-delay: ${animDelays};`);
   result.push(`  animation-timing-function: ${animEasings};`);
   result.push(`  animation-fill-mode: ${animFills};`);
   result.push(`  animation-iteration-count: ${iter};`);

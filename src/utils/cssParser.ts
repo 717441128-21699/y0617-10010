@@ -272,8 +272,27 @@ export function parseCssKeyframes(cssText: string): ParseResult | null {
     }
 
     let duration: number | undefined;
-    const fullDurMatch = css.match(/animation-duration\s*:\s*([^;]+)/i);
-    if (fullDurMatch) duration = parseDurationValue(fullDurMatch[1]);
+    const durPropMatch = css.match(/animation-duration\s*:\s*([^;]+)/i);
+    if (durPropMatch) duration = parseDurationValue(durPropMatch[1]);
+    if (!duration) {
+      const shorthandMatch = css.match(/(?:^|[{;])\s*animation\s*:\s*([^;]+)/im);
+      if (shorthandMatch) duration = parseDurationValue(shorthandMatch[1]);
+    }
+    if (!duration) {
+      const animShorthandAll = css.match(/animation\s*:\s*([^;{]+)/gi);
+      if (animShorthandAll) {
+        for (const m of animShorthandAll) {
+          const parts = m.split(':');
+          if (parts.length >= 2) {
+            const d = parseDurationValue(parts[1]);
+            if (d) {
+              duration = d;
+              break;
+            }
+          }
+        }
+      }
+    }
 
     return { name, keyframes, easingCurves, duration };
   } catch (e) {

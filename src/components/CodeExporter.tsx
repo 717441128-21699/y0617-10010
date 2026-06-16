@@ -1,9 +1,15 @@
 import { useState, useMemo } from 'react';
-import { Copy, Check, ChevronDown, ChevronUp, Code, Sparkles, Upload, FileCode, Layers } from 'lucide-react';
+import { Copy, Check, ChevronDown, ChevronUp, Code, Sparkles, Upload, FileCode, Layers, ListOrdered } from 'lucide-react';
 import { useAnimationStore } from '../store/animationStore';
-import { generateFullCss, generateKeyframesCss, generateWebAnimationsCode, generateKeyframesWithEasing, generateMultiAnimationCss } from '../utils/cssGenerator';
+import {
+  generateFullCss,
+  generateKeyframesCss,
+  generateWebAnimationsCode,
+  generateKeyframesWithEasing,
+  generateMultiAnimationCss,
+} from '../utils/cssGenerator';
 
-export type ExportMode = 'standard' | 'waapi' | 'timeline';
+export type ExportMode = 'standard' | 'waapi' | 'segments';
 
 export default function CodeExporter() {
   const state = useAnimationStore();
@@ -12,21 +18,52 @@ export default function CodeExporter() {
   const [viewMode, setViewMode] = useState<'full' | 'keyframes'>('full');
   const [exportMode, setExportMode] = useState<ExportMode>('standard');
 
-  const fullCss = useMemo(() => generateFullCss(state), [state]);
-  const kfCss = useMemo(() => generateKeyframesCss(state), [state]);
-  const kfWithEasingCss = useMemo(() => generateKeyframesWithEasing(state), [state]);
-  const waapiCode = useMemo(() => generateWebAnimationsCode(state), [state]);
-  const timelineCode = useMemo(() => generateAnimationTimelineCss(state), [state]);
+  const safeGen = <T,>(fn: () => T, fallback: T): T => {
+    try {
+      return fn();
+    } catch (e) {
+      console.error('CSS生成失败:', e);
+      return fallback;
+    }
+  };
+
+  const fullCss = useMemo(
+    () => safeGen(() => generateFullCss(state), '/* CSS 生成失败 */'),
+    [state]
+  );
+  const kfCss = useMemo(
+    () => safeGen(() => generateKeyframesCss(state), '/* CSS 生成失败 */'),
+    [state]
+  );
+  const kfWithEasingCss = useMemo(
+    () => safeGen(() => generateKeyframesWithEasing(state), '/* CSS 生成失败 */'),
+    [state]
+  );
+  const waapiCode = useMemo(
+    () => safeGen(() => generateWebAnimationsCode(state), '// JS 生成失败'),
+    [state]
+  );
+  const multiSegCode = useMemo(
+    () => safeGen(() => generateMultiAnimationCss(state), '/* CSS 生成失败 */'),
+    [state]
+  );
 
   const displayCode = useMemo(() => {
-    if (exportMode === 'waapi') return waapiCode;
-    if (exportMode === 'timeline') return timelineCode;
-    return viewMode === 'full' ? fullCss : kfWithEasingCss;
-  }, [exportMode, viewMode, fullCss, kfWithEasingCss, waapiCode, timelineCode]);
+    try {
+      if (exportMode === 'waapi') return waapiCode;
+      if (exportMode === 'segments') return multiSegCode;
+      return viewMode === 'full' ? fullCss : kfWithEasingCss;
+    } catch (e) {
+      console.error(e);
+      return '/* 代码生成异常 */';
+    }
+  }, [exportMode, viewMode, fullCss, kfWithEasingCss, waapiCode, multiSegCode]);
+
+  const safeCode = displayCode || '';
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(displayCode);
+      await navigator.clipboard.writeText(safeCode);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (e) {
@@ -86,6 +123,7 @@ export default function CodeExporter() {
                     ? 'bg-editor-accent/20 text-editor-accent border-editor-accent/40'
                     : 'bg-editor-bg text-slate-400 border-editor-border hover:text-slate-200'
                 }`}
+                title="所有浏览器兼容，每段缓动直接写入@keyframes"
               >
                 <FileCode size={10} />
                 标准 CSS
@@ -97,20 +135,22 @@ export default function CodeExporter() {
                     ? 'bg-editor-accent/20 text-editor-accent border-editor-accent/40'
                     : 'bg-editor-bg text-slate-400 border-editor-border hover:text-slate-200'
                 }`}
+                title="Web Animations API - JS 调用，精确控制每段缓动"
               >
                 <Code size={10} />
                 WAAPI
               </button>
               <button
-                onClick={() => setExportMode('timeline')}
+                onClick={() => setExportMode('segments')}
                 className={`flex items-center gap-1 px-2 py-1 text-[10px] font-mono rounded border transition-all ${
-                  exportMode === 'timeline'
+                  exportMode === 'segments'
                     ? 'bg-editor-accent/20 text-editor-accent border-editor-accent/40'
                     : 'bg-editor-bg text-slate-400 border-editor-border hover:text-slate-200'
                 }`}
+                title="多段 @keyframes + animation-delay 依次播放，兼容性 Chrome 43+"
               >
-                <Layers size={10} />
-                Timeline
+                <ListOrdered size={10} />
+                分段CSS
               </button>
             </div>
             {exportMode === 'standard' && (
@@ -137,6 +177,11 @@ export default function CodeExporter() {
                 </button>
               </div>
             )}
+            {exportMode === 'segments' && (
+              <p className="text-[10px] text-slate-500 leading-relaxed">
+                多段独立 @keyframes 用 animation-delay 依次衔接，每段缓动独立生效，循环时保持顺序。兼容性 Chrome 43+, Firefox 16+, Safari 9+
+              </p>
+            )}
           </div>
 
           <div className="flex-1 relative">
@@ -162,7 +207,7 @@ export default function CodeExporter() {
             </button>
             <pre className="h-full overflow-y-auto p-4 pt-10 m-0 text-[11px] leading-relaxed font-mono text-slate-300 bg-[#0a0f1c]">
               <code>
-                {displayCode.split('\n').map((line, i) => {
+                {safeCode.split('\n').map((line, i) => {
                   let highlighted = line;
                   highlighted = highlighted.replace(
                     /(@keyframes)(\s+)([a-zA-Z_-][\w-]*)/g,
